@@ -1,2 +1,42 @@
-SELECT DISTINCT *
-FROM GBI_RETAIL_BAP_DB.ASO_OPS_WSA_SNDBX_BIZ_APP.WRIKE_STG;
+python3 - <<'PY'
+import csv
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+csv.field_size_limit(100_000_000)
+path = Path.home() / "Desktop/missing-projects/snowflake_snapshot.csv"
+
+with path.open(encoding="utf-8-sig", newline="") as f:
+    reader = csv.reader(f)
+    headers = next(reader)
+    matches = [i for i, h in enumerate(headers)
+               if h.strip().lower() == "effortallocation_totaleffort"]
+    if len(matches) != 1:
+        raise SystemExit("Expected exactly one effortAllocation_totalEffort column.")
+    index = matches[0]
+    total = Decimal(0)
+    rows = blanks = invalid = 0
+
+    for row in reader:
+        rows += 1
+        if len(row) != len(headers):
+            raise SystemExit(f"Wrong column count at data row {rows}.")
+        value = row[index].strip()
+        if value.lower() in {"", "null", "none", "nan", "nat", "<na>", "\\n"}:
+            blanks += 1
+            continue
+        try:
+            number = Decimal(value)
+            if not number.is_finite():
+                raise InvalidOperation
+            total += number
+        except InvalidOperation:
+            invalid += 1
+
+print("Column:", headers[index])
+print("Column position:", index + 1)
+print("Data rows:", rows)
+print("Raw numeric sum, INCLUDING repeated rows:", format(total, "f"))
+print("Blank/null values:", blanks)
+print("Invalid values:", invalid)
+PY
