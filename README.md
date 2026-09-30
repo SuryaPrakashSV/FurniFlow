@@ -4,59 +4,91 @@ from pathlib import Path
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-root = Path.home() / "Desktop"
-files = sorted({
-    p
-    for folder in [root/"wrike-local-baseline", root/"missing-projects"]
+csv.field_size_limit(100000000)
+desktop = Path.home() / "Desktop"
+root = desktop / "missing-projects"
+
+reviews = sorted({
+    p for folder in [desktop/"wrike-local-baseline", root]
     for p in folder.rglob("project_access_review.csv")
 })
-assert len(files) == 1, "Expected exactly one access-review file"
+assert len(reviews) == 1, "Expected one access-review file"
 
-def read(path):
+with reviews[0].open(encoding="utf-8-sig", newline="") as f:
+    access = {}
+    for r in csv.DictReader(f):
+        cid = r["container_id"].strip()
+        assert cid not in access, "Duplicate access-review ID"
+        access[cid] = r
+
+folders = [
+    "parentfolderid", "childfolderid", "grandchildfolderid",
+    "babyfolderid", "grandbabyfolderid"
+]
+tasks = [
+    "parenttaskid", "childtaskid", "grandchildtaskid",
+    "babytaskid", "grandbabytaskid", "greatgrandbabytaskid"
+]
+path_columns = ["id"] + folders + tasks
+
+def load(path):
+    counts = Counter()
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        reader.fieldnames = [h.strip() for h in reader.fieldnames]
-        return list(reader)
+        reader.fieldnames = [
+            "".join(c for c in h.lower() if c.isalnum())
+            for h in reader.fieldnames
+        ]
+        required = set(path_columns + ["key", "effortallocationtotaleffort"])
+        assert required <= set(reader.fieldnames), "Required columns missing"
+        for r in reader:
+            entity = r["key"].strip()
+            effort = Decimal(r["effortallocationtotaleffort"].strip())
+            hierarchy = tuple(r[c].strip() for c in path_columns)
+            counts[(entity, effort, hierarchy)] += 1
+    return counts
 
-access_rows = read(files[0])
-access = {}
-for r in access_rows:
-    cid = r["container_id"].strip()
-    assert cid not in access, "Duplicate access-review ID: " + cid
-    access[cid] = r
+print("Reading saved CSVs...", flush=True)
+s = load(root/"snowflake_snapshot.csv")
+a = load(root/"output/local_validation/20260930T213320_958948Z/wrike_local_full.csv")
 
-diffs = read(
-    root/"missing-projects/output/raw_effort_review_20260930/container_differences.csv"
-)
-groups = defaultdict(lambda: [0, Decimal(0)])
-for r in diffs:
-    evidence = access.get(r["container_id"].strip())
-    status = evidence["akash_access"] if evidence else "NO_SAVED_CHECK"
-    group = groups[(r["classification"], status)]
-    group[0] += 1
-    group[1] += Decimal(r["delta_minutes"])
+groups = defaultdict(lambda: [0, 0, Decimal(0), Decimal(0)])
 
-print("DIFFERENCES MATCHED TO SAVED ACCESS RESULTS")
-for (classification, status), (count, effort) in sorted(groups.items()):
-    print(classification, status, "Containers:", count,
-          "Net raw effort:", effort, sep=" | ")
+for side, own, other in [(0, s, a), (1, a, s)]:
+    shared_effort = {(k[0], k[1]) for k in other}
+    for key, count in own.items():
+        entity, effort, hierarchy = key
+        if key in other or (entity, effort) not in shared_effort:
+            continue
 
-print("\nTOTAL NET RAW EFFORT:",
-      sum((v[1] for v in groups.values()), Decimal(0)))
+        # Only folder hierarchy columns; task IDs are not folder access checks.
+        folder_ids = {x for x in hierarchy[1:6] if x}
+        unavailable = tuple(sorted(
+            x for x in folder_ids
+            if x in access and access[x]["akash_access"] == "NOT_FOUND"
+        ))
+        if unavailable:
+            label = "NOT_FOUND folder IDs: " + ", ".join(unavailable)
+        elif any(x not in access for x in folder_ids):
+            label = "No NOT_FOUND match; some folder IDs lack saved checks"
+        elif folder_ids:
+            label = "No NOT_FOUND match; all folder IDs have saved checks"
+        else:
+            label = "No folder hierarchy IDs"
 
-print("\nACCESS OBSERVATION RANGE:")
-times = sorted(r["akash_observed_at"] for r in access_rows
-               if r["akash_observed_at"])
-print(times[0] if times else "Unknown",
-      "to", times[-1] if times else "Unknown")
+        group = groups[label]
+        group[side] += count
+        group[side+2] += effort * count
 
-print("\nSAVED BAU EVIDENCE:")
-bau = [r for r in access_rows if r["name"].strip().casefold() == "bau"]
-if not bau:
-    print("No exact BAU name found in saved access review")
-for r in bau:
-    for field in ["container_id", "name", "akash_access",
-                  "akash_http_status", "akash_observed_at",
-                  "akash_scope", "akash_evidence_method"]:
-        print(field + ":", r.get(field, "COLUMN ABSENT"))
+net_total = Decimal(0)
+print("\nMISSING HIERARCHY PATHS — SAVED FOLDER EVIDENCE")
+for label, (sr, ar, se, ae) in sorted(
+    groups.items(), key=lambda item: abs(item[1][2]-item[1][3]), reverse=True
+):
+    net_total += se-ae
+    print(label)
+    print(f"  Rows SF/Akash: {sr}/{ar}; NET raw effort: {se-ae}")
+
+print("\nHierarchy net total:", net_total)
+assert net_total == Decimal("85522514"), "Unexpected hierarchy total"
 PY
