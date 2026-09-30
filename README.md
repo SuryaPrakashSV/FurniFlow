@@ -1,25 +1,3 @@
-python3 - <<'PY'
-from pathlib import Path
-import shutil
+cd "$HOME/Desktop/missing-projects/paired_token_runs_20260930/surya" && python3 run_akash_raw_comparison.py --backup Wrike_Data.py --snapshot snowflake_snapshot.csv
 
-root = Path.home() / "Desktop/missing-projects"
-names = [
-    "Wrike_Data.py",
-    "Wrike_Data_local_validation.py",
-    "run_akash_raw_comparison.py",
-    "compare_wrike_raw_rows.py",
-    "snowflake_snapshot.csv"
-]
-for name in names:
-    assert (root/name).is_file(), "Missing file: " + str(root/name)
-
-destination = root / "paired_token_runs_20260930"
-destination.mkdir(exist_ok=False)
-
-for label in ["surya", "akash"]:
-    folder = destination / label
-    folder.mkdir()
-    for name in names:
-        shutil.copy2(root/name, folder/name)
-    print("Prepared:", folder)
-PY
+cd "$HOME/Desktop/missing-projects/paired_token_runs_20260930/akash" && python3 run_akash_raw_comparison.py --backup Wrike_Data.py --snapshot snowflake_snapshot.csv
