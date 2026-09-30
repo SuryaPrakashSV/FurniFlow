@@ -7,7 +7,6 @@ from decimal import Decimal
 csv.field_size_limit(100000000)
 desktop = Path.home() / "Desktop"
 root = desktop / "missing-projects"
-
 reviews = sorted({
     p for folder in [desktop/"wrike-local-baseline", root]
     for p in folder.rglob("project_access_review.csv")
@@ -21,15 +20,12 @@ with reviews[0].open(encoding="utf-8-sig", newline="") as f:
         assert cid not in access, "Duplicate access-review ID"
         access[cid] = r
 
-folders = [
-    "parentfolderid", "childfolderid", "grandchildfolderid",
-    "babyfolderid", "grandbabyfolderid"
-]
-tasks = [
+columns = [
+    "id", "parentfolderid", "childfolderid", "grandchildfolderid",
+    "babyfolderid", "grandbabyfolderid",
     "parenttaskid", "childtaskid", "grandchildtaskid",
     "babytaskid", "grandbabytaskid", "greatgrandbabytaskid"
 ]
-path_columns = ["id"] + folders + tasks
 
 def load(path):
     counts = Counter()
@@ -39,56 +35,57 @@ def load(path):
             "".join(c for c in h.lower() if c.isalnum())
             for h in reader.fieldnames
         ]
-        required = set(path_columns + ["key", "effortallocationtotaleffort"])
-        assert required <= set(reader.fieldnames), "Required columns missing"
         for r in reader:
-            entity = r["key"].strip()
-            effort = Decimal(r["effortallocationtotaleffort"].strip())
-            hierarchy = tuple(r[c].strip() for c in path_columns)
-            counts[(entity, effort, hierarchy)] += 1
+            key = (
+                r["key"].strip(),
+                Decimal(r["effortallocationtotaleffort"].strip()),
+                tuple(r[c].strip() for c in columns)
+            )
+            counts[key] += 1
     return counts
 
 print("Reading saved CSVs...", flush=True)
 s = load(root/"snowflake_snapshot.csv")
 a = load(root/"output/local_validation/20260930T213320_958948Z/wrike_local_full.csv")
-
-groups = defaultdict(lambda: [0, 0, Decimal(0), Decimal(0)])
+groups = defaultdict(lambda: [0, 0, Decimal(0), Decimal(0), set()])
+no_folders = []
 
 for side, own, other in [(0, s, a), (1, a, s)]:
-    shared_effort = {(k[0], k[1]) for k in other}
+    other_efforts = {(k[0], k[1]) for k in other}
     for key, count in own.items():
-        entity, effort, hierarchy = key
-        if key in other or (entity, effort) not in shared_effort:
+        entity, effort, path = key
+        if key in other or (entity, effort) not in other_efforts:
             continue
-
-        # Only folder hierarchy columns; task IDs are not folder access checks.
-        folder_ids = {x for x in hierarchy[1:6] if x}
-        unavailable = tuple(sorted(
-            x for x in folder_ids
-            if x in access and access[x]["akash_access"] == "NOT_FOUND"
-        ))
-        if unavailable:
-            label = "NOT_FOUND folder IDs: " + ", ".join(unavailable)
-        elif any(x not in access for x in folder_ids):
-            label = "No NOT_FOUND match; some folder IDs lack saved checks"
-        elif folder_ids:
-            label = "No NOT_FOUND match; all folder IDs have saved checks"
-        else:
-            label = "No folder hierarchy IDs"
-
-        group = groups[label]
+        folder_ids = {x for x in path[1:6] if x}
+        if any(access.get(x, {}).get("akash_access") == "NOT_FOUND"
+               for x in folder_ids):
+            continue
+        group = groups[path[0]]
         group[side] += count
         group[side+2] += effort * count
+        group[4].add(entity)
+        if not folder_ids:
+            no_folders.append((side, entity, effort, count, path))
 
-net_total = Decimal(0)
-print("\nMISSING HIERARCHY PATHS — SAVED FOLDER EVIDENCE")
-for label, (sr, ar, se, ae) in sorted(
-    groups.items(), key=lambda item: abs(item[1][2]-item[1][3]), reverse=True
-):
-    net_total += se-ae
-    print(label)
-    print(f"  Rows SF/Akash: {sr}/{ar}; NET raw effort: {se-ae}")
+total = sum((g[2]-g[3] for g in groups.values()), Decimal(0))
+assert total == Decimal("321480"), "Unexpected remaining total"
 
-print("\nHierarchy net total:", net_total)
-assert net_total == Decimal("85522514"), "Unexpected hierarchy total"
+print("\nContainers represented:", len(groups))
+for cid, g in sorted(
+    groups.items(), key=lambda item: abs(item[1][2]-item[1][3]),
+    reverse=True
+)[:10]:
+    name = access.get(cid, {}).get("name", "(no saved name)")
+    print(cid, name, sep=" | ")
+    print(f"  Rows SF/Akash: {g[0]}/{g[1]}; distinct entities: {len(g[4])}")
+    print(f"  Raw effort SF/Akash: {g[2]}/{g[3]}; NET: {g[2]-g[3]}")
+
+print("\nOccurrences without folder hierarchy IDs:")
+for side, entity, effort, count, path in no_folders:
+    print("Source:", "Snowflake" if side == 0 else "Akash")
+    print("Entity:", entity, "| Effort:", effort, "| Occurrences:", count)
+    print("Populated path fields:",
+          {c: v for c, v in zip(columns, path) if v})
+
+print("\nTotal remaining net raw effort:", total)
 PY
