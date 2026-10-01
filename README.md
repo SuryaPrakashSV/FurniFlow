@@ -1,25 +1,27 @@
 python3 - <<'PY'
 from pathlib import Path
-import hashlib
+import subprocess
+import sys
 
 root = Path.home() / "Desktop/missing-projects/paired_token_runs_20260930"
+exports = {}
 
-def sha256(path):
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
+for person in ("surya", "akash"):
+    files = list((root / person / "output/local_validation").glob("*/wrike_local_full.csv"))
+    if len(files) != 1:
+        raise SystemExit(f"STOP: Found {len(files)} exports for {person}; need exactly one.")
+    exports[person] = files[0]
 
-for name in (
-    "Wrike_Data.py",
-    "Wrike_Data_local_validation.py",
-    "compare_wrike_raw_rows.py",
-    "snowflake_snapshot.csv",
-):
-    a, b = root / "surya" / name, root / "akash" / name
-    if not a.is_file() or not b.is_file():
-        print(name, ": FILE MISSING")
-    else:
-        print(name, ": MATCH" if sha256(a) == sha256(b) else ": DIFFERENT")
+out = root / "surya_vs_akash_comparison"
+if out.exists():
+    raise SystemExit(f"STOP: Output already exists: {out}")
+
+print("Reference = Surya; comparison = Akash", flush=True)
+subprocess.run([
+    sys.executable,
+    str(root / "akash/compare_wrike_raw_rows.py"),
+    "--snapshot", str(exports["surya"]),
+    "--akash", str(exports["akash"]),
+    "--output", str(out),
+], check=True)
 PY
